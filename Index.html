@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Lanchonete das Nininas - Firebase + RawBT 58mm</title>
+
+<style>
+body { font-family: Arial; margin:0; display:flex; height:100vh; }
+
+#menu { width:40%; background:#f4f4f4; padding:10px; overflow:auto; }
+#pedido { width:60%; padding:10px; }
+
+button { padding:10px; margin:5px; cursor:pointer; }
+
+.item { cursor:pointer; padding:8px; background:#ddd; margin:5px 0; }
+.item:hover { background:#ccc; }
+
+.selecionado { background: yellow; }
+
+#busca { width:95%; padding:8px; margin-bottom:10px; }
+
+.sugestao { background: yellow; padding:5px; cursor:pointer; }
+
+#rodape {
+ position:fixed;
+ bottom:0;
+ left:0;
+ width:100%;
+ background:#222;
+ text-align:center;
+ padding:10px;
+}
+
+.modal {
+ display:none;
+ position:fixed;
+ top:20%;
+ left:50%;
+ transform:translateX(-50%);
+ background:white;
+ padding:20px;
+ border:2px solid black;
+}
+</style>
+</head>
+
+<body>
+
+<div id="menu">
+<h2>Cardápio</h2>
+
+<input id="busca" placeholder="Buscar por código ou nome..." oninput="buscarItem()">
+<div id="sugestoes"></div>
+
+<div id="cardapio"></div>
+</div>
+
+<div id="pedido">
+<h2>Lanchonete das Nininas</h2>
+
+<h3>Pedido</h3>
+<ul id="lista"></ul>
+<h3>Total: R$ <span id="total">0,00</span></h3>
+
+<button onclick="finalizar()">Finalizar e Imprimir</button>
+<button onclick="limpar()">Limpar Pedido</button>
+<button onclick="reimprimir()">Reimprimir Último</button>
+
+<h3>Pedidos do Dia</h3>
+<ul id="pedidosDia"></ul>
+
+<button onclick="cancelarSelecionado()">Cancelar Selecionado</button>
+<button onclick="relatorio()">Relatório do Dia</button>
+
+<div id="relatorioDiv" style="display:none;">
+<h2>Relatório</h2>
+<p id="qtd"></p>
+<p id="valor"></p>
+<button onclick="imprimirRelatorio()">Imprimir Relatório</button>
+<button onclick="voltar()">Voltar</button>
+</div>
+</div>
+
+<div id="rodape">
+<button onclick="abrirCadastro()" style="background:green; color:white;">Cadastrar Produto</button>
+<button onclick="abrirExcluir()" style="background:red; color:white;">Excluir Produto</button>
+</div>
+
+<div id="cadastroDiv" class="modal">
+<h3>Novo Produto</h3>
+
+<input id="codNovo" placeholder="Código"><br><br>
+<input id="nomeNovo" placeholder="Nome"><br><br>
+<input id="precoNovo" placeholder="Preço (ex: 10,50)"><br><br>
+
+<button onclick="salvarProduto()">Salvar</button>
+<button onclick="fecharCadastro()">Cancelar</button>
+</div>
+
+<div id="excluirDiv" class="modal">
+<h3>Excluir Produto</h3>
+
+<input id="buscaExcluir" placeholder="Código ou nome..." oninput="buscarExcluir()">
+<div id="sugestoesExcluir"></div>
+
+<button id="btnExcluirFinal" style="display:none; background:red; color:white;" onclick="excluirProduto()">
+Excluir Selecionado
+</button>
+
+<br><br>
+<button onclick="fecharExcluir()">Cancelar</button>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, doc, addDoc, setDoc, deleteDoc, onSnapshot, query, where, orderBy, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDsWtjQ7vhgLlvtvYDy9yK4I9g85gBDqhs",
+  authDomain: "lanchonete-das-nininas.firebaseapp.com",
+  projectId: "lanchonete-das-nininas",
+  storageBucket: "lanchonete-das-nininas.firebasestorage.app",
+  messagingSenderId: "642845309165",
+  appId: "1:642845309165:web:5760caf6fa3213b9fc34e4"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+let cardapio=[], pedido=[], total=0, ultimoPedido='', pedidosDia=[], selecionado=null, produtoSelecionadoExcluir=null;
+const hoje = (()=>{ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+
+function formatar(v){ return Number(v).toFixed(2).replace('.',','); }
+
+function carregarCardapio(){
+ const div=document.getElementById('cardapio'); div.innerHTML='';
+ cardapio.sort((a,b)=>Number(a.codigo)-Number(b.codigo)).forEach(item=>{
+  const d=document.createElement('div'); d.className='item';
+  d.textContent=`${item.codigo} - ${item.nome} - R$${formatar(item.preco)}`;
+  d.onclick=()=>addItem(item); div.appendChild(d);
+ });
+}
+
+function buscarItem(){
+ const v=document.getElementById('busca').value.toLowerCase(), s=document.getElementById('sugestoes'); s.innerHTML='';
+ if(!v)return;
+ cardapio.filter(i=>i.nome.toLowerCase().includes(v)||String(i.codigo)===v).forEach(item=>{
+  const d=document.createElement('div'); d.className='sugestao'; d.textContent=`${item.codigo} - ${item.nome}`;
+  d.onclick=()=>{addItem(item);s.innerHTML='';document.getElementById('busca').value='';}; s.appendChild(d);
+ });
+}
+
+function addItem(item){ pedido.push({codigo:item.codigo,nome:item.nome,preco:Number(item.preco)}); total+=Number(item.preco); atualizar(); }
+
+function atualizar(){
+ const lista=document.getElementById('lista'); lista.innerHTML='';
+ pedido.forEach(p=>{const li=document.createElement('li');li.textContent=`${p.codigo} - ${p.nome} - R$${formatar(p.preco)}`;lista.appendChild(li);});
+ document.getElementById('total').textContent=formatar(total);
+}
+
+async function finalizar(){
+ if(!pedido.length){alert('Adicione itens!');return;}
+ try{
+  const ref=doc(db,'contadores',hoje);
+  const senha=await runTransaction(db,async(t)=>{
+   const snap=await t.get(ref); const n=snap.exists()?Number(snap.data().proximaSenha||1):1;
+   t.set(ref,{proximaSenha:n+1,data:hoje},{merge:true}); return n;
+  });
+  const dataHora=new Date().toLocaleString('pt-BR');
+  const grupos=Object.values(pedido.reduce((a,p)=>{a[p.codigo]=a[p.codigo]||{...p,q:0};a[p.codigo].q++;return a;},{}));
+  const texto=`Lanchonete das Nininas
+----------------------
+Senha: ${senha}
+${dataHora}
+
+${grupos.map(p=>`${p.q}x ${p.nome} - R$${formatar(p.preco*p.q)}`).join('
+')}
+
+Total: R$${formatar(total)}`;
+  await addDoc(collection(db,'pedidos'),{data:hoje,senha:Number(senha),dataHora,itens:pedido,total:Number(total),status:'aberto'});
+  ultimoPedido=texto; limpar(); imprimirTexto(texto);
+ }catch(e){alert('Erro ao salvar pedido: '+e.message);}
+}
+
+function imprimirTexto(texto){ window.location.href='rawbt:'+encodeURIComponent(texto); }
+function limpar(){pedido=[];total=0;atualizar();}
+function reimprimir(){if(ultimoPedido)imprimirTexto(ultimoPedido);else alert('Nenhum pedido nesta sessão!');}
+
+function selecionar(el,s){document.querySelectorAll('#pedidosDia li').forEach(x=>x.classList.remove('selecionado'));el.classList.add('selecionado');selecionado=s;}
+
+async function cancelarSelecionado(){
+ if(selecionado===null){alert('Selecione!');return;}
+ const p=pedidosDia.find(x=>Number(x.senha)===Number(selecionado)); if(!p)return;
+ if(!confirm('Cancelar o pedido selecionado?'))return;
+ await setDoc(doc(db,'pedidos',p.id),{status:'cancelado'},{merge:true}); selecionado=null;
+}
+
+function atualizarListaDia(){
+ const ul=document.getElementById('pedidosDia');ul.innerHTML='';
+ pedidosDia.filter(p=>p.status!=='cancelado').forEach(p=>{
+  const li=document.createElement('li');li.textContent=`Senha ${p.senha} - R$${formatar(p.total)}`;
+  li.onclick=()=>selecionar(li,p.senha);ul.appendChild(li);
+ });
+}
+
+function relatorio(){
+ document.getElementById('relatorioDiv').style.display='block';
+ const v=pedidosDia.filter(p=>p.status!=='cancelado');
+ document.getElementById('qtd').textContent='Quantidade: '+v.length;
+ document.getElementById('valor').textContent='Total: R$ '+formatar(v.reduce((s,p)=>s+Number(p.total),0));
+}
+function imprimirRelatorio(){const v=pedidosDia.filter(p=>p.status!=='cancelado');imprimirTexto(`RELATÓRIO
+Lanchonete das Nininas
+Data: ${hoje}
+Pedidos: ${v.length}
+Total: R$${formatar(v.reduce((s,p)=>s+Number(p.total),0))}`);}
+function voltar(){document.getElementById('relatorioDiv').style.display='none';}
+
+function abrirCadastro(){document.getElementById('cadastroDiv').style.display='block';}
+function fecharCadastro(){document.getElementById('cadastroDiv').style.display='none';}
+async function salvarProduto(){
+ const codigo=Number(document.getElementById('codNovo').value), nome=document.getElementById('nomeNovo').value.trim(), preco=parseFloat(document.getElementById('precoNovo').value.replace(',','.'));
+ if(!codigo||!nome||isNaN(preco)){alert('Preço inválido!');return;}
+ if(cardapio.find(i=>Number(i.codigo)===codigo)){alert('Código já existe');return;}
+ await addDoc(collection(db,'cardapio'),{codigo,nome,preco});fecharCadastro();
+ document.getElementById('codNovo').value='';document.getElementById('nomeNovo').value='';document.getElementById('precoNovo').value='';
+}
+
+function abrirExcluir(){document.getElementById('excluirDiv').style.display='block';}
+function fecharExcluir(){document.getElementById('excluirDiv').style.display='none';document.getElementById('buscaExcluir').value='';document.getElementById('sugestoesExcluir').innerHTML='';document.getElementById('btnExcluirFinal').style.display='none';produtoSelecionadoExcluir=null;}
+function buscarExcluir(){
+ const v=document.getElementById('buscaExcluir').value.toLowerCase(),s=document.getElementById('sugestoesExcluir');s.innerHTML='';
+ if(!v)return;
+ cardapio.filter(i=>i.nome.toLowerCase().includes(v)||String(i.codigo)===v).forEach(item=>{
+  const d=document.createElement('div');d.className='sugestao';d.textContent=`${item.codigo} - ${item.nome}`;
+  d.onclick=()=>{produtoSelecionadoExcluir=item;document.getElementById('btnExcluirFinal').style.display='block';};s.appendChild(d);
+ });
+}
+async function excluirProduto(){if(!produtoSelecionadoExcluir){alert('Selecione!');return;}if(!confirm('Excluir produto?'))return;await deleteDoc(doc(db,'cardapio',produtoSelecionadoExcluir.id));fecharExcluir();}
+
+onSnapshot(collection(db,'cardapio'),snap=>{cardapio=snap.docs.map(d=>({id:d.id,...d.data()}));carregarCardapio();},e=>alert('Erro no cardápio: '+e.message));
+const q=query(collection(db,'pedidos'),where('data','==',hoje),orderBy('senha','asc'));
+onSnapshot(q,snap=>{pedidosDia=snap.docs.map(d=>({id:d.id,...d.data()}));atualizarListaDia();},e=>alert('Erro nos pedidos: '+e.message));
+
+window.buscarItem=buscarItem;window.addItem=addItem;window.finalizar=finalizar;window.limpar=limpar;window.reimprimir=reimprimir;window.cancelarSelecionado=cancelarSelecionado;window.relatorio=relatorio;window.imprimirRelatorio=imprimirRelatorio;window.voltar=voltar;window.abrirCadastro=abrirCadastro;window.fecharCadastro=fecharCadastro;window.salvarProduto=salvarProduto;window.abrirExcluir=abrirExcluir;window.fecharExcluir=fecharExcluir;window.buscarExcluir=buscarExcluir;window.excluirProduto=excluirProduto;
+</script>
+</body>
+</html>
