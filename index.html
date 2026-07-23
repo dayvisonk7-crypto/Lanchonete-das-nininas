@@ -173,8 +173,7 @@ async function finalizar(){
 Senha: ${senha}
 ${dataHora}
 
-${grupos.map(p=>`${p.q}x ${p.nome} - R$${formatar(p.preco*p.q)}`).join('
-')}
+${grupos.map(p=>`${p.q}x ${p.nome} - R$${formatar(p.preco*p.q)}`).join('\n')}
 
 Total: R$${formatar(total)}`;
   await addDoc(collection(db,'pedidos'),{data:hoje,senha:Number(senha),dataHora,itens:pedido,total:Number(total),status:'aberto'});
